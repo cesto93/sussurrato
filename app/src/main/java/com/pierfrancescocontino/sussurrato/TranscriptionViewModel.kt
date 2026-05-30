@@ -14,7 +14,11 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import java.io.ByteArrayOutputStream
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,12 +28,25 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+data class DownloadableModel(
+    val id: String,
+    val displayName: String,
+    val sizeLabel: String,
+    val url: String,
+    val filename: String,
+)
+
 data class TranscriptionUiState(
     val isModelLoaded: Boolean = false,
     val isModelLoading: Boolean = false,
     val isTranscribing: Boolean = false,
     val transcription: String? = null,
     val error: String? = null,
+    val isDownloading: Boolean = false,
+    val downloadProgress: Float = 0f,
+    val downloadError: String? = null,
+    val isCheckingModel: Boolean = false,
+    val downloadingModelId: String? = null,
 )
 
 class TranscriptionViewModel : ViewModel() {
@@ -37,6 +54,26 @@ class TranscriptionViewModel : ViewModel() {
     val uiState: StateFlow<TranscriptionUiState> = _uiState.asStateFlow()
 
     private var engine: Engine? = null
+    private var downloadJob: Job? = null
+
+    companion object {
+        val MODELS = listOf(
+            DownloadableModel(
+                id = "gemma-4-E4B",
+                displayName = "Gemma 4 E4B",
+                sizeLabel = "3.7 GB",
+                url = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
+                filename = "gemma-4-E4B-it.litertlm",
+            ),
+            DownloadableModel(
+                id = "gemma-4-E2B",
+                displayName = "Gemma 4 E2B",
+                sizeLabel = "2.6 GB",
+                url = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
+                filename = "gemma-4-E2B-it.litertlm",
+            ),
+        )
+    }
 
     fun loadModel(context: Context) {
         if (_uiState.value.isModelLoaded || _uiState.value.isModelLoading) return
@@ -49,7 +86,8 @@ class TranscriptionViewModel : ViewModel() {
                 if (modelFile == null) {
                     _uiState.value = _uiState.value.copy(
                         isModelLoading = false,
-                        error = "No .litertlm model found. Place a model in ${context.filesDir}"
+                        error = "No model found. Download a model from Hugging Face to get started.",
+                        isCheckingModel = true,
                     )
                     return@launch
                 }
@@ -63,6 +101,8 @@ class TranscriptionViewModel : ViewModel() {
                 _uiState.value = _uiState.value.copy(
                     isModelLoaded = true,
                     isModelLoading = false,
+                    isCheckingModel = false,
+                    error = null,
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -112,6 +152,91 @@ class TranscriptionViewModel : ViewModel() {
                 )
             }
         }
+    }
+
+    fun downloadModel(context: Context, modelId: String) {
+        if (_uiState.value.isDownloading) return
+
+        val model = MODELS.find { it.id == modelId } ?: return
+
+        downloadJob = viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(
+                isDownloading = true,
+                downloadProgress = 0f,
+                downloadError = null,
+                error = null,
+                downloadingModelId = modelId,
+            )
+
+            try {
+                val url = URL(model.url)
+                val connection = url.openConnection() as HttpURLConnection
+                connection.apply {
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "Sussurrato/1.0")
+                    connectTimeout = 30_000
+                    readTimeout = 60_000
+                    setRequestProperty("Accept", "*/*")
+                }
+
+                val contentLength = connection.contentLengthLong
+                val inputStream = connection.inputStream
+                val modelFile = File(context.filesDir, model.filename)
+                val tempFile = File(context.cacheDir, "${model.filename}.tmp")
+
+                FileOutputStream(tempFile).use { output ->
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    var totalBytesRead = 0L
+                    var lastProgress = 0
+
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        totalBytesRead += bytesRead
+
+                        if (contentLength > 0) {
+                            val progress = ((totalBytesRead * 100) / contentLength).toInt()
+                            if (progress != lastProgress) {
+                                lastProgress = progress
+                                _uiState.value = _uiState.value.copy(
+                                    downloadProgress = progress / 100f,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                inputStream.close()
+                connection.disconnect()
+
+                tempFile.renameTo(modelFile)
+
+                _uiState.value = _uiState.value.copy(
+                    isDownloading = false,
+                    downloadProgress = 1f,
+                )
+
+                loadModel(context)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.value = _uiState.value.copy(
+                    isDownloading = false,
+                    downloadProgress = 0f,
+                    downloadError = "Download failed: ${e.message}",
+                    downloadingModelId = null,
+                )
+            }
+        }
+    }
+
+    fun cancelDownload() {
+        downloadJob?.cancel()
+        downloadJob = null
+        _uiState.value = _uiState.value.copy(
+            isDownloading = false,
+            downloadProgress = 0f,
+            downloadingModelId = null,
+        )
     }
 
     private fun findModelFile(context: Context): File? {
@@ -260,6 +385,7 @@ class TranscriptionViewModel : ViewModel() {
 
     override fun onCleared() {
         super.onCleared()
+        downloadJob?.cancel()
         engine?.close()
         engine = null
     }
