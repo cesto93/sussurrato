@@ -1,3 +1,11 @@
 <resources>
     <string name="app_name">Sussurrato</string>
+    <string name="select_audio">Select Audio File</string>
+    <string name="supported_formats">MP3, WAV, M4A, OGG</string>
+    <string name="transcribe">Transcribe</string>
+    <string name="transcription_title">Transcription</string>
+    <string name="transcription_placeholder">Transcribed text will appear here…</string>
+    <string name="tap_to_change">Tap to change file</string>
+    <string name="audio_transcription">Audio Transcription</string>
+    <string name="select_audio_hint">Select an audio file to transcribe</string>
 </resources>
