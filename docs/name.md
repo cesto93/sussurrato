@@ -1,0 +1,1 @@
+Sussurrato: Local AI Scribe
