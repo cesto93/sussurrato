@@ -24,8 +24,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 data class DownloadableModel(
     val id: String,
@@ -135,7 +133,7 @@ class TranscriptionViewModel : ViewModel() {
 
                 conversation.use { conv ->
                     val pcmBytes = decodeAudioToPcm(context, audioUri)
-                    val wavBytes = pcmToWav(pcmBytes, 16000)
+                    val wavBytes = AudioUtils.pcmToWav(pcmBytes, 16000)
                     val response = conv.sendMessage(
                         Contents.of(
                             Content.AudioBytes(wavBytes),
@@ -287,32 +285,6 @@ class TranscriptionViewModel : ViewModel() {
         return null
     }
 
-    private fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
-        val channels = 1
-        val bitsPerSample = 16
-        val byteRate = sampleRate * channels * bitsPerSample / 8
-        val blockAlign = channels * bitsPerSample / 8
-        val dataSize = pcm.size
-        val fileSize = 36 + dataSize
-
-        val buf = ByteBuffer.allocate(fileSize).order(ByteOrder.LITTLE_ENDIAN)
-        buf.put("RIFF".toByteArray())
-        buf.putInt(fileSize - 8)
-        buf.put("WAVE".toByteArray())
-        buf.put("fmt ".toByteArray())
-        buf.putInt(16)
-        buf.putShort(1)
-        buf.putShort(channels.toShort())
-        buf.putInt(sampleRate)
-        buf.putInt(byteRate)
-        buf.putShort(blockAlign.toShort())
-        buf.putShort(bitsPerSample.toShort())
-        buf.put("data".toByteArray())
-        buf.putInt(dataSize)
-        buf.put(pcm)
-        return buf.array()
-    }
-
     private fun decodeAudioToPcm(context: Context, uri: Uri): ByteArray {
         val extractor = MediaExtractor()
         try {
@@ -387,59 +359,19 @@ class TranscriptionViewModel : ViewModel() {
             val channelCount = audioFormat!!.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 1)
 
             val pcm = if (channelCount > 1) {
-                convertToMono(rawPcm, channelCount)
+                AudioUtils.convertToMono(rawPcm, channelCount)
             } else {
                 rawPcm
             }
 
             return if (sourceSampleRate != targetSampleRate) {
-                resamplePcm(pcm, sourceSampleRate, targetSampleRate)
+                AudioUtils.resamplePcm(pcm, sourceSampleRate, targetSampleRate)
             } else {
                 pcm
             }
         } finally {
             extractor.release()
         }
-    }
-
-    private fun convertToMono(stereoPcm: ByteArray, channels: Int): ByteArray {
-        val shorts = ShortArray(stereoPcm.size / 2)
-        ByteBuffer.wrap(stereoPcm).order(ByteOrder.nativeOrder()).asShortBuffer().get(shorts)
-
-        val monoSamples = shorts.size / channels
-        val monoShorts = ShortArray(monoSamples)
-        for (i in 0 until monoSamples) {
-            var sum = 0
-            for (ch in 0 until channels) {
-                sum += shorts[i * channels + ch]
-            }
-            monoShorts[i] = (sum / channels).toShort()
-        }
-
-        val monoBytes = ByteArray(monoShorts.size * 2)
-        ByteBuffer.wrap(monoBytes).order(ByteOrder.nativeOrder()).asShortBuffer().put(monoShorts)
-        return monoBytes
-    }
-
-    private fun resamplePcm(pcm: ByteArray, sourceRate: Int, targetRate: Int): ByteArray {
-        if (sourceRate == targetRate) return pcm
-
-        val shorts = ShortArray(pcm.size / 2)
-        ByteBuffer.wrap(pcm).order(ByteOrder.nativeOrder()).asShortBuffer().get(shorts)
-
-        val ratio = targetRate.toDouble() / sourceRate.toDouble()
-        val outputLength = (shorts.size * ratio).toInt()
-        val output = ShortArray(outputLength)
-
-        for (i in 0 until outputLength) {
-            val srcIndex = (i / ratio).toInt()
-            val clamped = srcIndex.coerceIn(0, shorts.size - 1)
-            output[i] = shorts[clamped]
-        }
-
-        val outBytes = ByteArray(output.size * 2)
-        ByteBuffer.wrap(outBytes).order(ByteOrder.nativeOrder()).asShortBuffer().put(output)
-        return outBytes
     }
 
     override fun onCleared() {

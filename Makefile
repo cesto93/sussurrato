@@ -14,3 +14,6 @@ run: install
 
 waydroid-session:
 	waydroid session start &
+
+test:
+	./gradlew test
