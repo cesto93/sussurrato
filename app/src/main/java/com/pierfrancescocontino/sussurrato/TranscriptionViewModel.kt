@@ -352,22 +352,22 @@ class TranscriptionViewModel : ViewModel() {
             codec.release()
             extractor.unselectTrack(audioTrackIndex)
 
-            val rawPcm = outPcm.toByteArray()
+            val rawPcm16 = outPcm.toByteArray()
 
             val targetSampleRate = 16000
             val sourceSampleRate = audioFormat!!.getInteger(MediaFormat.KEY_SAMPLE_RATE, targetSampleRate)
             val channelCount = audioFormat!!.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 1)
 
-            val pcm = if (channelCount > 1) {
-                AudioUtils.convertToMono(rawPcm, channelCount)
-            } else {
-                rawPcm
+            var pcmFloat = AudioUtils.convert16BitPcmToFloat32(rawPcm16)
+
+            if (channelCount > 1) {
+                pcmFloat = AudioUtils.convertToMono(pcmFloat, channelCount)
             }
 
             return if (sourceSampleRate != targetSampleRate) {
-                AudioUtils.resamplePcm(pcm, sourceSampleRate, targetSampleRate)
+                AudioUtils.resamplePcm(pcmFloat, sourceSampleRate, targetSampleRate)
             } else {
-                pcm
+                pcmFloat
             }
         } finally {
             extractor.release()

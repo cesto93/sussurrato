@@ -7,7 +7,7 @@ internal object AudioUtils {
 
     fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
         val channels = 1
-        val bitsPerSample = 16
+        val bitsPerSample = 32
         val byteRate = sampleRate * channels * bitsPerSample / 8
         val blockAlign = channels * bitsPerSample / 8
         val dataSize = pcm.size
@@ -19,7 +19,7 @@ internal object AudioUtils {
         buf.put("WAVE".toByteArray())
         buf.put("fmt ".toByteArray())
         buf.putInt(16)
-        buf.putShort(1)
+        buf.putShort(3) // IEEE float
         buf.putShort(channels.toShort())
         buf.putInt(sampleRate)
         buf.putInt(byteRate)
@@ -31,43 +31,57 @@ internal object AudioUtils {
         return buf.array()
     }
 
-    fun convertToMono(multiChannelPcm: ByteArray, channels: Int): ByteArray {
-        val shorts = ShortArray(multiChannelPcm.size / 2)
-        ByteBuffer.wrap(multiChannelPcm).order(ByteOrder.nativeOrder()).asShortBuffer().get(shorts)
+    fun convert16BitPcmToFloat32(pcm16: ByteArray): ByteArray {
+        val shorts = ShortArray(pcm16.size / 2)
+        ByteBuffer.wrap(pcm16).order(ByteOrder.nativeOrder()).asShortBuffer().get(shorts)
 
-        val monoSamples = shorts.size / channels
-        val monoShorts = ShortArray(monoSamples)
-        for (i in 0 until monoSamples) {
-            var sum = 0
-            for (ch in 0 until channels) {
-                sum += shorts[i * channels + ch]
-            }
-            monoShorts[i] = (sum / channels).toShort()
+        val floats = FloatArray(shorts.size)
+        for (i in shorts.indices) {
+            floats[i] = shorts[i].toFloat() / 32768f
         }
 
-        val monoBytes = ByteArray(monoShorts.size * 2)
-        ByteBuffer.wrap(monoBytes).order(ByteOrder.nativeOrder()).asShortBuffer().put(monoShorts)
+        val outBytes = ByteArray(floats.size * 4)
+        ByteBuffer.wrap(outBytes).order(ByteOrder.nativeOrder()).asFloatBuffer().put(floats)
+        return outBytes
+    }
+
+    fun convertToMono(multiChannelPcm: ByteArray, channels: Int): ByteArray {
+        val floats = FloatArray(multiChannelPcm.size / 4)
+        ByteBuffer.wrap(multiChannelPcm).order(ByteOrder.nativeOrder()).asFloatBuffer().get(floats)
+
+        val monoSamples = floats.size / channels
+        val monoFloats = FloatArray(monoSamples)
+        for (i in 0 until monoSamples) {
+            var sum = 0f
+            for (ch in 0 until channels) {
+                sum += floats[i * channels + ch]
+            }
+            monoFloats[i] = sum / channels
+        }
+
+        val monoBytes = ByteArray(monoFloats.size * 4)
+        ByteBuffer.wrap(monoBytes).order(ByteOrder.nativeOrder()).asFloatBuffer().put(monoFloats)
         return monoBytes
     }
 
     fun resamplePcm(pcm: ByteArray, sourceRate: Int, targetRate: Int): ByteArray {
         if (sourceRate == targetRate) return pcm
 
-        val shorts = ShortArray(pcm.size / 2)
-        ByteBuffer.wrap(pcm).order(ByteOrder.nativeOrder()).asShortBuffer().get(shorts)
+        val floats = FloatArray(pcm.size / 4)
+        ByteBuffer.wrap(pcm).order(ByteOrder.nativeOrder()).asFloatBuffer().get(floats)
 
         val ratio = targetRate.toDouble() / sourceRate.toDouble()
-        val outputLength = (shorts.size * ratio).toInt()
-        val output = ShortArray(outputLength)
+        val outputLength = (floats.size * ratio).toInt()
+        val output = FloatArray(outputLength)
 
         for (i in 0 until outputLength) {
             val srcIndex = (i / ratio).toInt()
-            val clamped = srcIndex.coerceIn(0, shorts.size - 1)
-            output[i] = shorts[clamped]
+            val clamped = srcIndex.coerceIn(0, floats.size - 1)
+            output[i] = floats[clamped]
         }
 
-        val outBytes = ByteArray(output.size * 2)
-        ByteBuffer.wrap(outBytes).order(ByteOrder.nativeOrder()).asShortBuffer().put(output)
+        val outBytes = ByteArray(output.size * 4)
+        ByteBuffer.wrap(outBytes).order(ByteOrder.nativeOrder()).asFloatBuffer().put(output)
         return outBytes
     }
 
@@ -75,10 +89,11 @@ internal object AudioUtils {
         val buf = ByteBuffer.wrap(wavBytes).order(ByteOrder.LITTLE_ENDIAN)
         val riff = ByteArray(4)
         buf.get(riff)
-        buf.getInt() // file size
+        buf.getInt()
         val wave = ByteArray(4)
         buf.get(wave)
 
+        var audioFormat: Short = 1
         var sampleRate = 0
         var channels = 0
         var bitsPerSample = 0
@@ -92,11 +107,11 @@ internal object AudioUtils {
 
             when (id) {
                 "fmt " -> {
-                    buf.getShort() // audio format
+                    audioFormat = buf.getShort()
                     channels = buf.getShort().toInt()
                     sampleRate = buf.getInt()
-                    buf.getInt() // byte rate
-                    buf.getShort() // block align
+                    buf.getInt()
+                    buf.getShort()
                     bitsPerSample = buf.getShort().toInt()
                     val fmtExtra = chunkSize - 16
                     if (fmtExtra > 0) buf.position(buf.position() + fmtExtra)
@@ -116,7 +131,7 @@ internal object AudioUtils {
         }
 
         val data = pcmData ?: throw IllegalArgumentException("No data chunk found in WAV")
-        return WavData(data, sampleRate, channels, bitsPerSample)
+        return WavData(data, sampleRate, channels, bitsPerSample, audioFormat)
     }
 
     data class WavData(
@@ -124,5 +139,6 @@ internal object AudioUtils {
         val sampleRate: Int,
         val channels: Int,
         val bitsPerSample: Int,
+        val audioFormat: Short = 1,
     )
 }
