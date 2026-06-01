@@ -135,9 +135,10 @@ class TranscriptionViewModel : ViewModel() {
 
                 conversation.use { conv ->
                     val pcmBytes = decodeAudioToPcm(context, audioUri)
+                    val wavBytes = pcmToWav(pcmBytes, 16000)
                     val response = conv.sendMessage(
                         Contents.of(
-                            Content.AudioBytes(pcmBytes),
+                            Content.AudioBytes(wavBytes),
                             Content.Text("Transcribe this audio."),
                         )
                     )
@@ -284,6 +285,32 @@ class TranscriptionViewModel : ViewModel() {
                 ?.let { return it }
         }
         return null
+    }
+
+    private fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
+        val channels = 1
+        val bitsPerSample = 16
+        val byteRate = sampleRate * channels * bitsPerSample / 8
+        val blockAlign = channels * bitsPerSample / 8
+        val dataSize = pcm.size
+        val fileSize = 36 + dataSize
+
+        val buf = ByteBuffer.allocate(fileSize).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put("RIFF".toByteArray())
+        buf.putInt(fileSize - 8)
+        buf.put("WAVE".toByteArray())
+        buf.put("fmt ".toByteArray())
+        buf.putInt(16)
+        buf.putShort(1)
+        buf.putShort(channels.toShort())
+        buf.putInt(sampleRate)
+        buf.putInt(byteRate)
+        buf.putShort(blockAlign.toShort())
+        buf.putShort(bitsPerSample.toShort())
+        buf.put("data".toByteArray())
+        buf.putInt(dataSize)
+        buf.put(pcm)
+        return buf.array()
     }
 
     private fun decodeAudioToPcm(context: Context, uri: Uri): ByteArray {
