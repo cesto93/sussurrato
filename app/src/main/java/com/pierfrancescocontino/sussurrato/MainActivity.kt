@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
@@ -31,20 +32,26 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -59,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -355,8 +363,8 @@ fun TranscriptionScreen(
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
                             onClick = {
-                                val id = failedModel?.id ?: TranscriptionViewModel.MODELS.first().id
-                                viewModel.downloadModel(context, id)
+                                val model = failedModel ?: TranscriptionViewModel.MODELS.first()
+                                viewModel.downloadModel(context, model)
                             },
                             shape = RoundedCornerShape(10.dp),
                         ) {
@@ -425,7 +433,7 @@ fun TranscriptionScreen(
                                         )
                                     }
                                     Button(
-                                        onClick = { viewModel.downloadModel(context, model.id) },
+                                        onClick = { viewModel.downloadModel(context, model) },
                                         shape = RoundedCornerShape(10.dp),
                                     ) {
                                         Icon(
@@ -445,6 +453,66 @@ fun TranscriptionScreen(
             }
 
             if (uiState.isModelLoaded) {
+                var showModelSelector by remember { mutableStateOf(false) }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    ),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(24.dp),
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Model",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                            Text(
+                                text = uiState.currentModelName ?: "Unknown",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { showModelSelector = true },
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SwapHoriz,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Switch")
+                        }
+                    }
+                }
+
+                if (showModelSelector) {
+                    ModelSelectionDialog(
+                        onDismiss = { showModelSelector = false },
+                        onSelectModel = { model ->
+                            viewModel.selectModel(context, model)
+                            showModelSelector = false
+                        },
+                    )
+                }
+
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -611,6 +679,170 @@ private fun getFileName(context: android.content.Context, uri: Uri): String? {
             if (nameIndex >= 0) it.getString(nameIndex) else null
         } else null
     }
+}
+
+@Composable
+private fun ModelSelectionDialog(
+    onDismiss: () -> Unit,
+    onSelectModel: (DownloadableModel) -> Unit,
+) {
+    val context = LocalContext.current
+    var showCustomUrl by remember { mutableStateOf(false) }
+
+    val downloadedFilenames = remember {
+        listOfNotNull(
+            context.filesDir,
+            context.getExternalFilesDir(null),
+        ).flatMap { dir ->
+            dir.listFiles()
+                ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
+                ?.map { it.name }
+                ?: emptyList()
+        }.toSet()
+    }
+
+    if (showCustomUrl) {
+        CustomUrlDialog(
+            onDismiss = { showCustomUrl = false },
+            onDownload = { model ->
+                onSelectModel(model)
+                showCustomUrl = false
+            },
+        )
+        return
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Select Model",
+                style = MaterialTheme.typography.titleLarge,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                TranscriptionViewModel.MODELS.forEach { model ->
+                    val isDownloaded = model.filename in downloadedFilenames
+                    val isCurrent = model.id == (onSelectModel.hashCode().toString()) // placeholder
+                    OutlinedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = model.displayName,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Text(
+                                    text = model.sizeLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Button(
+                                onClick = { onSelectModel(model) },
+                                shape = RoundedCornerShape(8.dp),
+                                enabled = !isDownloaded || true,
+                            ) {
+                                Text(if (isDownloaded) "Load" else "Download")
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                TextButton(
+                    onClick = { showCustomUrl = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Download from custom URL")
+                }
+            }
+        },
+        confirmButton = {},
+    )
+}
+
+@Composable
+private fun CustomUrlDialog(
+    onDismiss: () -> Unit,
+    onDownload: (DownloadableModel) -> Unit,
+) {
+    var url by remember { mutableStateOf("") }
+    var displayName by remember { mutableStateOf("") }
+
+    val filename = remember(url) {
+        url.substringAfterLast('/').substringBefore('?').ifBlank { "model.litertlm" }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Custom Model URL") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Enter the URL of a .litertlm model file to download.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("Model URL") },
+                    placeholder = { Text("https://huggingface.co/.../model.litertlm") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it },
+                    label = { Text("Display name (optional)") },
+                    placeholder = { Text("My custom model") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Text(
+                    text = "Filename: $filename",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val name = displayName.ifBlank { filename.substringBeforeLast('.') }
+                    val model = DownloadableModel(
+                        id = "custom-$filename",
+                        displayName = name,
+                        sizeLabel = "",
+                        url = url,
+                        filename = filename,
+                    )
+                    onDownload(model)
+                },
+                enabled = url.isNotBlank(),
+                shape = RoundedCornerShape(10.dp),
+            ) {
+                Text("Download")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Preview(showBackground = true)

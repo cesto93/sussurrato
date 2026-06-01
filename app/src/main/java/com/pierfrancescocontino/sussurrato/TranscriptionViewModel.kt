@@ -49,6 +49,8 @@ data class TranscriptionUiState(
     val downloadError: String? = null,
     val isCheckingModel: Boolean = false,
     val downloadingModelId: String? = null,
+    val currentModelName: String? = null,
+    val currentModelId: String? = null,
 )
 
 class TranscriptionViewModel : ViewModel() {
@@ -91,7 +93,7 @@ class TranscriptionViewModel : ViewModel() {
         if (_uiState.value.isModelLoaded || _uiState.value.isModelLoading) return
 
         viewModelScope.launch(Dispatchers.IO) {
-            _uiState.value = _uiState.value.copy(isModelLoading = true, error = null)
+            _uiState.value = _uiState.value.copy(isModelLoading = true, error = null, isCheckingModel = true)
 
             try {
                 val modelFile = findModelFile(context)
@@ -104,18 +106,8 @@ class TranscriptionViewModel : ViewModel() {
                     return@launch
                 }
 
-                val config = EngineConfig(
-                    modelPath = modelFile.absolutePath,
-                    backend = Backend.CPU(),
-                    audioBackend = Backend.CPU(),
-                )
-                engine = Engine(config).also { it.initialize() }
-                _uiState.value = _uiState.value.copy(
-                    isModelLoaded = true,
-                    isModelLoading = false,
-                    isCheckingModel = false,
-                    error = null,
-                )
+                val modelInfo = MODELS.firstOrNull { modelFile.name == it.filename }
+                initEngine(modelFile, modelInfo)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isModelLoaded = false,
@@ -124,6 +116,52 @@ class TranscriptionViewModel : ViewModel() {
                 )
             }
         }
+    }
+
+    fun selectModel(context: Context, model: DownloadableModel) {
+        if (model.id == _uiState.value.currentModelId) return
+        if (_uiState.value.isModelLoading || _uiState.value.isDownloading) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val modelFile = findModelFile(context, model.filename)
+            if (modelFile != null) {
+                _uiState.value = _uiState.value.copy(
+                    isModelLoading = true,
+                    isModelLoaded = false,
+                    isCheckingModel = false,
+                    error = null,
+                )
+                try {
+                    initEngine(modelFile, model)
+                } catch (e: Exception) {
+                    _uiState.value = _uiState.value.copy(
+                        isModelLoaded = false,
+                        isModelLoading = false,
+                        error = "Failed to load model: ${e.message}",
+                    )
+                }
+            } else if (model.url.isNotBlank()) {
+                downloadModel(context, model)
+            }
+        }
+    }
+
+    private fun initEngine(modelFile: File, modelInfo: DownloadableModel?) {
+        engine?.close()
+        val config = EngineConfig(
+            modelPath = modelFile.absolutePath,
+            backend = Backend.CPU(),
+            audioBackend = Backend.CPU(),
+        )
+        engine = Engine(config).also { it.initialize() }
+        _uiState.value = _uiState.value.copy(
+            isModelLoaded = true,
+            isModelLoading = false,
+            isCheckingModel = false,
+            error = null,
+            currentModelName = modelInfo?.displayName ?: modelFile.nameWithoutExtension,
+            currentModelId = modelInfo?.id ?: "custom-${modelFile.name}",
+        )
     }
 
     fun transcribe(context: Context, audioUri: Uri, language: Language? = null) {
@@ -178,9 +216,8 @@ class TranscriptionViewModel : ViewModel() {
         }
     }
 
-    fun downloadModel(context: Context, modelId: String) {
+    fun downloadModel(context: Context, model: DownloadableModel) {
         if (_uiState.value.isDownloading) return
-        val model = MODELS.find { it.id == modelId } ?: return
 
         val downloadManager = ModelDownloadManager(context)
         modelDownloadManager = downloadManager
@@ -192,7 +229,7 @@ class TranscriptionViewModel : ViewModel() {
             downloadProgress = 0f,
             downloadError = null,
             error = null,
-            downloadingModelId = modelId,
+            downloadingModelId = model.id,
         )
 
         downloadJob = viewModelScope.launch(Dispatchers.IO) {
@@ -214,12 +251,18 @@ class TranscriptionViewModel : ViewModel() {
                             }
                         }
 
-                        _uiState.value = _uiState.value.copy(
-                            isDownloading = false,
-                            downloadProgress = 1f,
-                            downloadingModelId = null,
-                        )
-                        loadModel(context)
+                        try {
+                            initEngine(modelFile, model)
+                        } catch (e: Exception) {
+                            _uiState.value = _uiState.value.copy(
+                                isDownloading = false,
+                                downloadProgress = 0f,
+                                downloadingModelId = null,
+                                isModelLoaded = false,
+                                isModelLoading = false,
+                                error = "Failed to load model: ${e.message}",
+                            )
+                        }
                         break
                     }
 
@@ -287,24 +330,20 @@ class TranscriptionViewModel : ViewModel() {
         )
     }
 
-    private fun findModelFile(context: Context): File? {
-        listOf(
-            context.filesDir,
-            context.getExternalFilesDir(null),
-        ).forEach { dir ->
+    private fun findModelFile(context: Context, filename: String? = null): File? {
+        val dirs = mutableListOf(context.filesDir, context.getExternalFilesDir(null))
+        val sdcard = File("/sdcard")
+        if (sdcard.isDirectory) dirs.add(sdcard)
+
+        dirs.forEach { dir ->
             if (dir != null) {
                 dir.listFiles()
                     ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
-                    ?.maxByOrNull { it.lastModified() }
-                    ?.let { return it }
+                    ?.let { files ->
+                        if (filename != null) files.firstOrNull { it.name == filename }
+                        else files.maxByOrNull { it.lastModified() }
+                    }?.let { return it }
             }
-        }
-        val sdcard = File("/sdcard")
-        if (sdcard.isDirectory) {
-            sdcard.listFiles()
-                ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
-                ?.maxByOrNull { it.lastModified() }
-                ?.let { return it }
         }
         return null
     }
