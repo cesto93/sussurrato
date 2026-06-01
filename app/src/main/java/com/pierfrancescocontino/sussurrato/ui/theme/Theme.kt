@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Pierfrancesco Contino
+// SPDX-License-Identifier: GPL-3.0-only
+
 package com.pierfrancescocontino.sussurrato.ui.theme
 
 import android.app.Activity
