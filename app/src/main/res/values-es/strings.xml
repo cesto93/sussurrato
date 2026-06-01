@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">Sussurrato</string>
+    <string name="select_audio">Seleccionar archivo de audio</string>
+    <string name="supported_formats">MP3, WAV, M4A, OGG</string>
+    <string name="transcribe">Transcribir</string>
+    <string name="transcription_title">Transcripción</string>
+    <string name="transcription_placeholder">El texto transcrito aparecerá aquí…</string>
+    <string name="tap_to_change">Toca para cambiar archivo</string>
+    <string name="audio_transcription">Transcripción de audio</string>
+    <string name="select_audio_hint">Selecciona un archivo de audio para transcribir</string>
+    <string name="download_model">Elegir un modelo</string>
+    <string name="download_model_description">Descarga un modelo de Hugging Face para comenzar</string>
+    <string name="downloading_model">Descargando… %1$d%%</string>
+    <string name="start_download">Descargar</string>
+    <string name="downloading_model_hint">Descargando modelo, por favor mantén la app abierta</string>
+    <string name="model_gemma_e4b">Gemma 4 E4B</string>
+    <string name="model_gemma_e4b_size">3.7 GB</string>
+    <string name="model_gemma_e2b">Gemma 4 E2B</string>
+    <string name="model_gemma_e2b_size">2.6 GB</string>
+</resources>
