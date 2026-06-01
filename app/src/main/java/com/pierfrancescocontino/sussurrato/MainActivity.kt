@@ -124,8 +124,10 @@ fun TranscriptionScreen(
 
     var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
     var selectedFileName by remember { mutableStateOf<String?>(null) }
-    var selectedLanguage by remember { mutableStateOf<Language?>(null) }
     var languageDropdownExpanded by remember { mutableStateOf(false) }
+
+    val selectedLanguage = TranscriptionViewModel.LANGUAGES
+        .firstOrNull { it.code == uiState.selectedLanguageCode }
 
     LaunchedEffect(Unit) {
         viewModel.loadModel(context)
@@ -598,11 +600,18 @@ fun TranscriptionScreen(
                             expanded = languageDropdownExpanded,
                             onDismissRequest = { languageDropdownExpanded = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Auto-detect") },
+                                onClick = {
+                                    viewModel.setLanguage(context, null)
+                                    languageDropdownExpanded = false
+                                },
+                            )
                             TranscriptionViewModel.LANGUAGES.forEach { lang ->
                                 DropdownMenuItem(
                                     text = { Text(lang.displayName) },
                                     onClick = {
-                                        selectedLanguage = lang
+                                        viewModel.setLanguage(context, lang.code)
                                         languageDropdownExpanded = false
                                     },
                                 )

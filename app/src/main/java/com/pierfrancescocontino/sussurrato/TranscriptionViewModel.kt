@@ -5,10 +5,12 @@ package com.pierfrancescocontino.sussurrato
 
 import android.app.DownloadManager
 import android.content.Context
+import android.content.SharedPreferences
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import androidx.core.content.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.litertlm.Backend
@@ -54,6 +56,7 @@ data class TranscriptionUiState(
     val downloadingModelId: String? = null,
     val currentModelName: String? = null,
     val currentModelId: String? = null,
+    val selectedLanguageCode: String? = null,
 )
 
 class TranscriptionViewModel : ViewModel() {
@@ -64,6 +67,7 @@ class TranscriptionViewModel : ViewModel() {
     private var downloadJob: Job? = null
     private var modelDownloadManager: ModelDownloadManager? = null
     private var currentDownloadId: Long = -1L
+    private var prefs: SharedPreferences? = null
 
     companion object {
         val MODELS = listOf(
@@ -95,11 +99,26 @@ class TranscriptionViewModel : ViewModel() {
     fun loadModel(context: Context) {
         if (_uiState.value.isModelLoaded || _uiState.value.isModelLoading) return
 
+        prefs = PreferencesManager.getPrefs(context)
+        val savedLanguageCode = PreferencesManager.getLanguageCode(prefs!!)
+
         viewModelScope.launch(Dispatchers.IO) {
-            _uiState.value = _uiState.value.copy(isModelLoading = true, error = null, isCheckingModel = true)
+            _uiState.value = _uiState.value.copy(
+                isModelLoading = true,
+                error = null,
+                isCheckingModel = true,
+                selectedLanguageCode = savedLanguageCode,
+            )
 
             try {
-                val modelFile = findModelFile(context)
+                val savedModelId = PreferencesManager.getModelId(prefs!!)
+                val modelFile = if (savedModelId != null) {
+                    val savedModel = MODELS.firstOrNull { it.id == savedModelId }
+                    savedModel?.let { findModelFile(context, it.filename) } ?: findModelFile(context)
+                } else {
+                    findModelFile(context)
+                }
+
                 if (modelFile == null) {
                     _uiState.value = _uiState.value.copy(
                         isModelLoading = false,
@@ -125,6 +144,8 @@ class TranscriptionViewModel : ViewModel() {
         if (model.id == _uiState.value.currentModelId) return
         if (_uiState.value.isModelLoading || _uiState.value.isDownloading) return
 
+        PreferencesManager.saveModelId(PreferencesManager.getPrefs(context), model.id)
+
         viewModelScope.launch(Dispatchers.IO) {
             val modelFile = findModelFile(context, model.filename)
             if (modelFile != null) {
@@ -147,6 +168,11 @@ class TranscriptionViewModel : ViewModel() {
                 downloadModel(context, model)
             }
         }
+    }
+
+    fun setLanguage(context: Context, languageCode: String?) {
+        PreferencesManager.saveLanguageCode(PreferencesManager.getPrefs(context), languageCode)
+        _uiState.value = _uiState.value.copy(selectedLanguageCode = languageCode)
     }
 
     private fun initEngine(modelFile: File, modelInfo: DownloadableModel?) {
@@ -449,4 +475,25 @@ class TranscriptionViewModel : ViewModel() {
         engine?.close()
         engine = null
     }
+}
+
+internal object PreferencesManager {
+    private const val PREFS_NAME = "sussurrato_prefs"
+    private const val KEY_MODEL_ID = "selected_model_id"
+    private const val KEY_LANGUAGE_CODE = "selected_language_code"
+
+    fun getPrefs(context: Context): SharedPreferences =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun getModelId(prefs: SharedPreferences): String? =
+        prefs.getString(KEY_MODEL_ID, null)
+
+    fun saveModelId(prefs: SharedPreferences, id: String) =
+        prefs.edit { putString(KEY_MODEL_ID, id) }
+
+    fun getLanguageCode(prefs: SharedPreferences): String? =
+        prefs.getString(KEY_LANGUAGE_CODE, null)
+
+    fun saveLanguageCode(prefs: SharedPreferences, code: String?) =
+        prefs.edit { putString(KEY_LANGUAGE_CODE, code) }
 }
