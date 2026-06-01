@@ -70,4 +70,4 @@ limitations under the License.
 
 ### Gemma
 
-This application includes or uses the Gemma model, which is made available by Google under the [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
+This application includes or uses the Gemma 4 model, which is made available by Google under the [Apache License, Version 2.0](https://ai.google.dev/gemma/apache_2).
