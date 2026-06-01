@@ -33,6 +33,11 @@ data class DownloadableModel(
     val filename: String,
 )
 
+data class Language(
+    val code: String,
+    val displayName: String,
+)
+
 data class TranscriptionUiState(
     val isModelLoaded: Boolean = false,
     val isModelLoading: Boolean = false,
@@ -71,6 +76,14 @@ class TranscriptionViewModel : ViewModel() {
                 url = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
                 filename = "gemma-4-E2B-it.litertlm",
             ),
+        )
+
+        val LANGUAGES = listOf(
+            Language("it", "Italiano"),
+            Language("en", "English"),
+            Language("fr", "Français"),
+            Language("es", "Español"),
+            Language("de", "Deutsch"),
         )
     }
 
@@ -113,7 +126,7 @@ class TranscriptionViewModel : ViewModel() {
         }
     }
 
-    fun transcribe(context: Context, audioUri: Uri) {
+    fun transcribe(context: Context, audioUri: Uri, language: Language? = null) {
         val engine = engine
         if (engine == null) {
             _uiState.value = _uiState.value.copy(error = "Model not loaded")
@@ -127,7 +140,15 @@ class TranscriptionViewModel : ViewModel() {
             try {
                 val conversation = engine.createConversation(
                     ConversationConfig(
-                        systemInstruction = Contents.of("You are a transcription assistant. Transcribe the audio speech accurately. Output only the transcribed text.")
+                        systemInstruction = Contents.of(
+                            buildString {
+                                append("You are a transcription assistant. Transcribe the audio speech accurately.")
+                                if (language != null) {
+                                    append(" The audio language is ${language.displayName}.")
+                                }
+                                append(" Output only the transcribed text.")
+                            }
+                        )
                     )
                 )
 
@@ -137,7 +158,10 @@ class TranscriptionViewModel : ViewModel() {
                     val response = conv.sendMessage(
                         Contents.of(
                             Content.AudioBytes(wavBytes),
-                            Content.Text("Transcribe this audio."),
+                            Content.Text(
+                                if (language != null) "Transcribe this audio in ${language.displayName}."
+                                else "Transcribe this audio."
+                            ),
                         )
                     )
                     _uiState.value = _uiState.value.copy(
