@@ -1,5 +1,6 @@
 package com.pierfrancescocontino.sussurrato
 
+import android.app.DownloadManager
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -14,17 +15,15 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import java.io.ByteArrayOutputStream
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -55,6 +54,8 @@ class TranscriptionViewModel : ViewModel() {
 
     private var engine: Engine? = null
     private var downloadJob: Job? = null
+    private var modelDownloadManager: ModelDownloadManager? = null
+    private var currentDownloadId: Long = -1L
 
     companion object {
         val MODELS = listOf(
@@ -156,46 +157,83 @@ class TranscriptionViewModel : ViewModel() {
 
     fun downloadModel(context: Context, modelId: String) {
         if (_uiState.value.isDownloading) return
-
         val model = MODELS.find { it.id == modelId } ?: return
 
+        val downloadManager = ModelDownloadManager(context)
+        modelDownloadManager = downloadManager
+        val downloadId = downloadManager.enqueueDownload(model)
+        currentDownloadId = downloadId
+
+        _uiState.value = _uiState.value.copy(
+            isDownloading = true,
+            downloadProgress = 0f,
+            downloadError = null,
+            error = null,
+            downloadingModelId = modelId,
+        )
+
         downloadJob = viewModelScope.launch(Dispatchers.IO) {
-            _uiState.value = _uiState.value.copy(
-                isDownloading = true,
-                downloadProgress = 0f,
-                downloadError = null,
-                error = null,
-                downloadingModelId = modelId,
-            )
+            var lastProgress = 0
 
-            try {
-                val url = URL(model.url)
-                val connection = url.openConnection() as HttpURLConnection
-                connection.apply {
-                    requestMethod = "GET"
-                    setRequestProperty("User-Agent", "Sussurrato/1.0")
-                    connectTimeout = 30_000
-                    readTimeout = 60_000
-                    setRequestProperty("Accept", "*/*")
-                }
+            while (true) {
+                val info = downloadManager.queryProgress(downloadId)
+                if (info == null) break
 
-                val contentLength = connection.contentLengthLong
-                val inputStream = connection.inputStream
-                val modelFile = File(context.filesDir, model.filename)
-                val tempFile = File(context.cacheDir, "${model.filename}.tmp")
+                when (info.status) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        val modelFile = File(context.filesDir, model.filename)
+                        val externalFile = context.getExternalFilesDir(null)
+                            ?.let { File(it, model.filename) }
+                        if (externalFile?.exists() == true) {
+                            if (!externalFile.renameTo(modelFile)) {
+                                externalFile.copyTo(modelFile, overwrite = true)
+                                externalFile.delete()
+                            }
+                        }
 
-                FileOutputStream(tempFile).use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-                    var totalBytesRead = 0L
-                    var lastProgress = 0
+                        _uiState.value = _uiState.value.copy(
+                            isDownloading = false,
+                            downloadProgress = 1f,
+                            downloadingModelId = null,
+                        )
+                        loadModel(context)
+                        break
+                    }
 
-                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        totalBytesRead += bytesRead
+                    DownloadManager.STATUS_FAILED -> {
+                        val errorMsg = when (info.reason) {
+                            DownloadManager.ERROR_INSUFFICIENT_SPACE ->
+                                "Insufficient storage space"
+                            DownloadManager.ERROR_CANNOT_RESUME ->
+                                "Download cannot be resumed"
+                            DownloadManager.ERROR_DEVICE_NOT_FOUND ->
+                                "Storage device not found"
+                            DownloadManager.ERROR_FILE_ALREADY_EXISTS ->
+                                "File already exists"
+                            DownloadManager.ERROR_FILE_ERROR ->
+                                "File error"
+                            DownloadManager.ERROR_HTTP_DATA_ERROR ->
+                                "HTTP data error"
+                            DownloadManager.ERROR_TOO_MANY_REDIRECTS ->
+                                "Too many redirects"
+                            DownloadManager.ERROR_UNHANDLED_HTTP_CODE ->
+                                "Unhandled HTTP code: ${info.reason}"
+                            else ->
+                                "Download failed (reason: ${info.reason})"
+                        }
+                        _uiState.value = _uiState.value.copy(
+                            isDownloading = false,
+                            downloadProgress = 0f,
+                            downloadError = errorMsg,
+                            downloadingModelId = null,
+                        )
+                        break
+                    }
 
-                        if (contentLength > 0) {
-                            val progress = ((totalBytesRead * 100) / contentLength).toInt()
+                    DownloadManager.STATUS_RUNNING,
+                    DownloadManager.STATUS_PAUSED -> {
+                        if (info.totalBytes > 0) {
+                            val progress = ((info.bytesDownloaded * 100) / info.totalBytes).toInt()
                             if (progress != lastProgress) {
                                 lastProgress = progress
                                 _uiState.value = _uiState.value.copy(
@@ -206,25 +244,7 @@ class TranscriptionViewModel : ViewModel() {
                     }
                 }
 
-                inputStream.close()
-                connection.disconnect()
-
-                tempFile.renameTo(modelFile)
-
-                _uiState.value = _uiState.value.copy(
-                    isDownloading = false,
-                    downloadProgress = 1f,
-                )
-
-                loadModel(context)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                _uiState.value = _uiState.value.copy(
-                    isDownloading = false,
-                    downloadProgress = 0f,
-                    downloadError = "Download failed: ${e.message}",
-                    downloadingModelId = null,
-                )
+                delay(500)
             }
         }
     }
@@ -232,6 +252,11 @@ class TranscriptionViewModel : ViewModel() {
     fun cancelDownload() {
         downloadJob?.cancel()
         downloadJob = null
+        if (currentDownloadId != -1L) {
+            modelDownloadManager?.cancelDownload(currentDownloadId)
+            modelDownloadManager = null
+            currentDownloadId = -1L
+        }
         _uiState.value = _uiState.value.copy(
             isDownloading = false,
             downloadProgress = 0f,
@@ -240,18 +265,25 @@ class TranscriptionViewModel : ViewModel() {
     }
 
     private fun findModelFile(context: Context): File? {
-        val dir = context.filesDir
-        return dir.listFiles()
-            ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
-            ?.maxByOrNull { it.lastModified() }
-            ?: let {
-                val sdcard = File("/sdcard")
-                if (sdcard.isDirectory) {
-                    sdcard.listFiles()
-                        ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
-                        ?.maxByOrNull { it.lastModified() }
-                } else null
+        listOf(
+            context.filesDir,
+            context.getExternalFilesDir(null),
+        ).forEach { dir ->
+            if (dir != null) {
+                dir.listFiles()
+                    ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
+                    ?.maxByOrNull { it.lastModified() }
+                    ?.let { return it }
             }
+        }
+        val sdcard = File("/sdcard")
+        if (sdcard.isDirectory) {
+            sdcard.listFiles()
+                ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
+                ?.maxByOrNull { it.lastModified() }
+                ?.let { return it }
+        }
+        return null
     }
 
     private fun decodeAudioToPcm(context: Context, uri: Uri): ByteArray {
@@ -386,6 +418,9 @@ class TranscriptionViewModel : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         downloadJob?.cancel()
+        if (currentDownloadId != -1L) {
+            modelDownloadManager?.cancelDownload(currentDownloadId)
+        }
         engine?.close()
         engine = null
     }
