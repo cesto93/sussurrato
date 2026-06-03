@@ -19,6 +19,7 @@ import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -226,16 +228,22 @@ class TranscriptionViewModel : ViewModel() {
                 conversation.use { conv ->
                     val pcmBytes = decodeAudioToPcm(context, audioUri)
                     val wavBytes = AudioUtils.pcmToWav(pcmBytes, 16000)
-                    val response = conv.sendMessage(
+                    conv.sendMessageAsync(
                         Contents.of(
                             Content.AudioBytes(wavBytes),
                             Content.Text("Transcribe this audio."),
                         )
-                    )
-                    _uiState.value = _uiState.value.copy(
-                        transcription = response.toString(),
-                        isTranscribing = false,
-                    )
+                    ).catch { e ->
+                        _uiState.value = _uiState.value.copy(
+                            isTranscribing = false,
+                            error = "Transcription failed: ${e.message}",
+                        )
+                    }.collect { message ->
+                        _uiState.value = _uiState.value.copy(
+                            transcription = (_uiState.value.transcription ?: "") + message.toString(),
+                        )
+                    }
+                    _uiState.value = _uiState.value.copy(isTranscribing = false)
                 }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
