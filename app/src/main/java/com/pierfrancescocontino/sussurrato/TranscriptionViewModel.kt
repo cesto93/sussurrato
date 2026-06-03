@@ -205,15 +205,19 @@ class TranscriptionViewModel : ViewModel() {
             _uiState.value = _uiState.value.copy(isTranscribing = true, error = null, transcription = null)
 
             try {
-                val conversation = engine.createConversation(
+                    val conversation = engine.createConversation(
                     ConversationConfig(
                         systemInstruction = Contents.of(
                             buildString {
-                                append("You are a transcription assistant. Transcribe the audio speech accurately.")
                                 if (language != null) {
-                                    append(" The audio language is ${language.displayName}.")
+                                    append("Transcribe the following speech segment in ${language.displayName} into ${language.displayName} text.\n\n")
+                                    append("Follow these specific instructions for formatting the answer:\n")
+                                    append("* Only output the transcription, with no newlines.\n")
+                                    append("* When transcribing numbers, write the digits, i.e. write 1.7 and not one point seven, and write 3 instead of three.")
+                                } else {
+                                    append("You are a transcription assistant. Transcribe the audio speech accurately.")
+                                    append(" Output only the transcribed text.")
                                 }
-                                append(" Output only the transcribed text.")
                             }
                         )
                     )
@@ -225,10 +229,7 @@ class TranscriptionViewModel : ViewModel() {
                     val response = conv.sendMessage(
                         Contents.of(
                             Content.AudioBytes(wavBytes),
-                            Content.Text(
-                                if (language != null) "Transcribe this audio in ${language.displayName}."
-                                else "Transcribe this audio."
-                            ),
+                            Content.Text("Transcribe this audio."),
                         )
                     )
                     _uiState.value = _uiState.value.copy(
