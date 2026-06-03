@@ -19,6 +19,8 @@ import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -177,8 +179,10 @@ class TranscriptionViewModel : ViewModel() {
         _uiState.value = _uiState.value.copy(selectedLanguageCode = languageCode)
     }
 
+    @OptIn(ExperimentalApi::class)
     private fun initEngine(modelFile: File, modelInfo: DownloadableModel?) {
         engine?.close()
+        ExperimentalFlags.enableSpeculativeDecoding = true
         val config = EngineConfig(
             modelPath = modelFile.absolutePath,
             backend = Backend.CPU(),
