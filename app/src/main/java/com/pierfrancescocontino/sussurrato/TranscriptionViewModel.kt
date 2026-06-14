@@ -3,9 +3,9 @@
 
 package com.pierfrancescocontino.sussurrato
 
-import android.app.DownloadManager
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -25,14 +25,13 @@ import com.pierfrancescocontino.sussurrato.llama.AsrEngine
 import com.pierfrancescocontino.sussurrato.llama.AiChat
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.Serializable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -44,7 +43,7 @@ data class DownloadableModel(
     val filename: String,
     val mmprojUrl: String? = null,
     val mmprojFilename: String? = null,
-) {
+) : Serializable {
     val isGguf: Boolean get() = filename.endsWith(".gguf")
 }
 
@@ -76,9 +75,6 @@ class TranscriptionViewModel : ViewModel() {
     private var engine: Engine? = null
     private var asrEngine: AsrEngine? = null
     private var downloadJob: Job? = null
-    private var modelDownloadManager: ModelDownloadManager? = null
-    private var currentDownloadId: Long = -1L
-    private var mmprojDownloadId: Long = -1L
     private var prefs: SharedPreferences? = null
 
     companion object {
@@ -322,11 +318,9 @@ class TranscriptionViewModel : ViewModel() {
 
     fun downloadModel(context: Context, model: DownloadableModel) {
         if (_uiState.value.isDownloading) return
+        Log.d("TranscriptionVM", "downloadModel: ${model.id}")
 
-        val downloadManager = ModelDownloadManager(context)
-        modelDownloadManager = downloadManager
-        val downloadId = downloadManager.enqueueDownload(model)
-        currentDownloadId = downloadId
+        PreferencesManager.saveModelId(PreferencesManager.getPrefs(context), model.id)
 
         _uiState.value = _uiState.value.copy(
             isDownloading = true,
@@ -336,114 +330,65 @@ class TranscriptionViewModel : ViewModel() {
             downloadingModelId = model.id,
         )
 
-        downloadJob = viewModelScope.launch(Dispatchers.IO) {
-            var lastProgress = 0
+        observeDownloadEvents(context, model)
+        DownloadService.startDownload(context, model)
+    }
 
-            fun moveToInternal(filename: String) {
-                val modelFile = File(context.filesDir, filename)
-                val externalFile = context.getExternalFilesDir(null)
-                    ?.let { File(it, filename) }
-                if (externalFile?.exists() == true) {
-                    if (!externalFile.renameTo(modelFile)) {
-                        externalFile.copyTo(modelFile, overwrite = true)
-                        externalFile.delete()
-                    }
-                }
-            }
+    private var downloadEventsJob: Job? = null
 
-            suspend fun pollDownload(id: Long, onSuccess: suspend () -> Unit) {
-                while (true) {
-                    val info = downloadManager.queryProgress(id)
-                    if (info == null) break
-
-                    when (info.status) {
-                        DownloadManager.STATUS_SUCCESSFUL -> {
-                            onSuccess()
-                            return
+    private fun observeDownloadEvents(context: Context, model: DownloadableModel) {
+        downloadEventsJob?.cancel()
+        downloadEventsJob = viewModelScope.launch(Dispatchers.Main) {
+            DownloadEventBus.events.collect { event ->
+                when (event) {
+                    is DownloadEvent.Progress -> {
+                        if (event.modelId == model.id || event.modelId.startsWith(model.id)) {
+                            _uiState.value = _uiState.value.copy(downloadProgress = event.progress)
                         }
-                        DownloadManager.STATUS_FAILED -> {
-                            val errorMsg = when (info.reason) {
-                                DownloadManager.ERROR_INSUFFICIENT_SPACE -> "Insufficient storage space"
-                                DownloadManager.ERROR_CANNOT_RESUME -> "Download cannot be resumed"
-                                DownloadManager.ERROR_DEVICE_NOT_FOUND -> "Storage device not found"
-                                DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "File already exists"
-                                DownloadManager.ERROR_FILE_ERROR -> "File error"
-                                DownloadManager.ERROR_HTTP_DATA_ERROR -> "HTTP data error"
-                                DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "Too many redirects"
-                                DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "Unhandled HTTP code: ${info.reason}"
-                                else -> "Download failed (reason: ${info.reason})"
+                    }
+                    is DownloadEvent.Completed -> {
+                        if (event.modelId == model.id) {
+                            val downloadDir = context.getExternalFilesDir(null) ?: context.filesDir
+                            val modelFile = File(downloadDir, model.filename)
+                            try {
+                                initEngine(context, modelFile, model)
+                                _uiState.value = _uiState.value.copy(
+                                    isDownloading = false,
+                                    downloadProgress = 1f,
+                                    downloadError = null,
+                                    downloadingModelId = null,
+                                )
+                            } catch (e: Exception) {
+                                _uiState.value = _uiState.value.copy(
+                                    isDownloading = false,
+                                    downloadProgress = 0f,
+                                    downloadingModelId = null,
+                                    isModelLoaded = false,
+                                    isModelLoading = false,
+                                    error = "Failed to load model: ${e.message}",
+                                )
                             }
+                        }
+                    }
+                    is DownloadEvent.Failed -> {
+                        if (event.modelId == model.id) {
                             _uiState.value = _uiState.value.copy(
                                 isDownloading = false,
                                 downloadProgress = 0f,
-                                downloadError = errorMsg,
+                                downloadError = "Download failed: ${event.error}",
                                 downloadingModelId = null,
                             )
-                            return
-                        }
-                        DownloadManager.STATUS_RUNNING,
-                        DownloadManager.STATUS_PAUSED -> {
-                            if (info.totalBytes > 0) {
-                                val progress = ((info.bytesDownloaded * 100) / info.totalBytes).toInt()
-                                if (progress != lastProgress) {
-                                    lastProgress = progress
-                                    _uiState.value = _uiState.value.copy(
-                                        downloadProgress = progress / 100f,
-                                    )
-                                }
-                            }
                         }
                     }
-                    delay(500)
-                }
-            }
-
-            pollDownload(downloadId) {
-                moveToInternal(model.filename)
-
-                if (model.isGguf && model.mmprojUrl != null && model.mmprojFilename != null) {
-                    val mmprojModel = model.copy(
-                        id = "${model.id}-mmproj",
-                        url = model.mmprojUrl,
-                        filename = model.mmprojFilename,
-                        mmprojUrl = null,
-                        mmprojFilename = null,
-                    )
-                    val mmprojId = downloadManager.enqueueDownload(mmprojModel)
-                    mmprojDownloadId = mmprojId
-                    pollDownload(mmprojId) {
-                        moveToInternal(model.mmprojFilename)
-                    }
-                }
-
-                try {
-                    initEngine(context, File(context.filesDir, model.filename), model)
-                } catch (e: Exception) {
-                    _uiState.value = _uiState.value.copy(
-                        isDownloading = false,
-                        downloadProgress = 0f,
-                        downloadingModelId = null,
-                        isModelLoaded = false,
-                        isModelLoading = false,
-                        error = "Failed to load model: ${e.message}",
-                    )
                 }
             }
         }
     }
 
-    fun cancelDownload() {
+    fun cancelDownload(context: Context) {
         downloadJob?.cancel()
         downloadJob = null
-        if (currentDownloadId != -1L) {
-            modelDownloadManager?.cancelDownload(currentDownloadId)
-            modelDownloadManager = null
-            currentDownloadId = -1L
-        }
-        if (mmprojDownloadId != -1L) {
-            modelDownloadManager?.cancelDownload(mmprojDownloadId)
-            mmprojDownloadId = -1L
-        }
+        DownloadService.cancel(context)
         _uiState.value = _uiState.value.copy(
             isDownloading = false,
             downloadProgress = 0f,
@@ -562,9 +507,6 @@ class TranscriptionViewModel : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         downloadJob?.cancel()
-        if (currentDownloadId != -1L) {
-            modelDownloadManager?.cancelDownload(currentDownloadId)
-        }
         engine?.close()
         engine = null
         asrEngine?.cleanUp()

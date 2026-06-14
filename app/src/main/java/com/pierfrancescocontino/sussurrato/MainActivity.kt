@@ -3,10 +3,13 @@
 
 package com.pierfrancescocontino.sussurrato
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -125,6 +128,29 @@ fun TranscriptionScreen(
     var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
     var selectedFileName by remember { mutableStateOf<String?>(null) }
     var languageDropdownExpanded by remember { mutableStateOf(false) }
+    var pendingDownloadModel by remember { mutableStateOf<DownloadableModel?>(null) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        Log.d("MainActivity", "POST_NOTIFICATIONS granted=$granted")
+        pendingDownloadModel?.let { model ->
+            pendingDownloadModel = null
+            // proceed even if denied — ModelDownloadManager falls back to VISIBILITY_HIDDEN
+            viewModel.downloadModel(context, model)
+        }
+    }
+
+    fun startDownloadWithPermission(model: DownloadableModel) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingDownloadModel = model
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            viewModel.downloadModel(context, model)
+        }
+    }
 
     val selectedLanguage = TranscriptionViewModel.LANGUAGES
         .firstOrNull { it.code == uiState.selectedLanguageCode }
@@ -326,7 +352,7 @@ fun TranscriptionScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
-                            onClick = { viewModel.cancelDownload() },
+                            onClick = { viewModel.cancelDownload(context) },
                             shape = RoundedCornerShape(10.dp),
                         ) {
                             Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -369,7 +395,7 @@ fun TranscriptionScreen(
                         Button(
                             onClick = {
                                 val model = failedModel ?: TranscriptionViewModel.MODELS.first()
-                                viewModel.downloadModel(context, model)
+                                startDownloadWithPermission(model)
                             },
                             shape = RoundedCornerShape(10.dp),
                         ) {
@@ -438,7 +464,7 @@ fun TranscriptionScreen(
                                         )
                                     }
                                     Button(
-                                        onClick = { viewModel.downloadModel(context, model) },
+                                        onClick = { startDownloadWithPermission(model) },
                                         shape = RoundedCornerShape(10.dp),
                                     ) {
                                         Icon(
@@ -511,8 +537,12 @@ fun TranscriptionScreen(
                 if (showModelSelector) {
                     ModelSelectionDialog(
                         onDismiss = { showModelSelector = false },
-                        onSelectModel = { model ->
+                        onLoadModel = { model ->
                             viewModel.selectModel(context, model)
+                            showModelSelector = false
+                        },
+                        onDownloadModel = { model ->
+                            startDownloadWithPermission(model)
                             showModelSelector = false
                         },
                     )
@@ -696,7 +726,8 @@ private fun getFileName(context: android.content.Context, uri: Uri): String? {
 @Composable
 private fun ModelSelectionDialog(
     onDismiss: () -> Unit,
-    onSelectModel: (DownloadableModel) -> Unit,
+    onLoadModel: (DownloadableModel) -> Unit,
+    onDownloadModel: (DownloadableModel) -> Unit,
 ) {
     val context = LocalContext.current
     var showCustomUrl by remember { mutableStateOf(false) }
@@ -717,7 +748,7 @@ private fun ModelSelectionDialog(
         CustomUrlDialog(
             onDismiss = { showCustomUrl = false },
             onDownload = { model ->
-                onSelectModel(model)
+                onDownloadModel(model)
                 showCustomUrl = false
             },
         )
@@ -736,7 +767,6 @@ private fun ModelSelectionDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 TranscriptionViewModel.MODELS.forEach { model ->
                     val isDownloaded = model.filename in downloadedFilenames
-                    val isCurrent = model.id == (onSelectModel.hashCode().toString()) // placeholder
                     OutlinedCard(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
@@ -760,9 +790,11 @@ private fun ModelSelectionDialog(
                                 )
                             }
                             Button(
-                                onClick = { onSelectModel(model) },
+                                onClick = {
+                                    if (isDownloaded) onLoadModel(model)
+                                    else onDownloadModel(model)
+                                },
                                 shape = RoundedCornerShape(8.dp),
-                                enabled = !isDownloaded || true,
                             ) {
                                 Text(if (isDownloaded) "Load" else "Download")
                             }

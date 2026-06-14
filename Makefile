@@ -6,14 +6,20 @@ PACKAGE_NAME := com.pierfrancescocontino.sussurrato
 build:
 	./gradlew :app:assembleDebug
 
-install: build
+way-install: build
 	waydroid app install app/build/outputs/apk/debug/app-debug.apk
 
-run: install
+install:
+	adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+run: way-install
 	waydroid app launch $(PACKAGE_NAME)
 
-waydroid-session:
+wayd-session:
 	waydroid session start &
 
 test:
 	./gradlew test
+
+debug:
+	adb logcat -s "ModelDownload:*" "TranscriptionVM:*"

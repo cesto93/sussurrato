@@ -3,77 +3,95 @@
 
 package com.pierfrancescocontino.sussurrato
 
-import android.app.DownloadManager
-import android.content.Context
-import android.net.Uri
+import android.util.Log
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
-class ModelDownloadManager(appContext: Context) {
+class ModelDownloadManager(private val downloadDir: File) {
 
-    private val downloadManager =
-        appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    private val externalDir = appContext.getExternalFilesDir(null)
+    @Throws(HttpDownloadException::class)
+    fun downloadDirect(
+        url: String,
+        filename: String,
+        onProgress: (Float) -> Unit,
+    ): File {
+        Log.d("ModelDownload", "downloadDirect: $url -> $filename")
 
-    fun enqueueDownload(model: DownloadableModel): Long {
-        val request = DownloadManager.Request(Uri.parse(model.url))
-            .setTitle("Downloading ${model.displayName}")
-            .setDescription("Model file (${model.sizeLabel})")
-            .setNotificationVisibility(
-                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
-            )
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(false)
-            .addRequestHeader("User-Agent", "Sussurrato/1.0")
+        val outputFile = File(downloadDir, filename)
+        val tempFile = File(downloadDir, "$filename.part")
 
-        if (externalDir != null) {
-            request.setDestinationUri(
-                Uri.fromFile(File(externalDir, model.filename)),
-            )
+        if (outputFile.exists()) {
+            Log.d("ModelDownload", "file already exists, skipping: $outputFile")
+            return outputFile
         }
 
-        return downloadManager.enqueue(request)
-    }
+        tempFile.delete()
 
-    fun queryProgress(downloadId: Long): DownloadProgressInfo? {
-        val query = DownloadManager.Query().setFilterById(downloadId)
-        return downloadManager.query(query).use { cursor ->
-            if (cursor.moveToFirst()) {
-                DownloadProgressInfo(
-                    bytesDownloaded = cursor.getLong(
-                        cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR),
-                    ),
-                    totalBytes = cursor.getLong(
-                        cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES),
-                    ),
-                    status = cursor.getInt(
-                        cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS),
-                    ),
-                    reason = cursor.getInt(
-                        cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON),
-                    ),
-                    localUri = cursor.getString(
-                        cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI),
-                    ),
-                )
-            } else null
+        try {
+            val connection = URL(url).openConnection() as HttpURLConnection
+            connection.apply {
+                setRequestProperty("User-Agent", "Sussurrato/1.0")
+                setRequestProperty("Accept", "*/*")
+                instanceFollowRedirects = true
+                connectTimeout = 30_000
+                readTimeout = 30_000
+            }
+
+            val responseCode = connection.responseCode
+            Log.d("ModelDownload", "HTTP response: $responseCode")
+
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                throw HttpDownloadException(responseCode, connection.responseMessage ?: "")
+            }
+
+            val contentLength = connection.contentLengthLong
+            Log.d("ModelDownload", "content-length: $contentLength")
+
+            tempFile.outputStream().use { output ->
+                connection.inputStream.use { input ->
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    var totalBytesRead = 0L
+                    var lastReportedProgress = 0
+
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        totalBytesRead += bytesRead
+
+                        if (contentLength > 0) {
+                            val progress = ((totalBytesRead * 100) / contentLength).toInt()
+                            if (progress != lastReportedProgress) {
+                                lastReportedProgress = progress
+                                onProgress(progress / 100f)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!tempFile.renameTo(outputFile)) {
+                tempFile.copyTo(outputFile, overwrite = true)
+                tempFile.delete()
+            }
+
+            Log.d("ModelDownload", "download complete: $outputFile (${outputFile.length()} bytes)")
+            return outputFile
+        } catch (e: Exception) {
+            tempFile.delete()
+            Log.e("ModelDownload", "download failed: ${e.message}", e)
+            throw e
         }
     }
 
-    fun cancelDownload(downloadId: Long) {
-        downloadManager.remove(downloadId)
-    }
-
-    fun getDownloadedFile(model: DownloadableModel): File? {
-        val dir = externalDir ?: return null
-        val file = File(dir, model.filename)
-        return if (file.exists()) file else null
+    fun cancelDownload(filename: String) {
+        val tempFile = File(downloadDir, "$filename.part")
+        if (tempFile.exists()) {
+            tempFile.delete()
+            Log.d("ModelDownload", "cancelled (deleted part): $tempFile")
+        }
     }
 }
 
-data class DownloadProgressInfo(
-    val bytesDownloaded: Long,
-    val totalBytes: Long,
-    val status: Int,
-    val reason: Int,
-    val localUri: String?,
-)
+class HttpDownloadException(val httpCode: Int, val httpMessage: String) :
+    Exception("HTTP $httpCode${if (httpMessage.isNotEmpty()) ": $httpMessage" else ""}")
