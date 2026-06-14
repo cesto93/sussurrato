@@ -86,11 +86,11 @@ class TranscriptionViewModel : ViewModel() {
             DownloadableModel(
                 id = "qwen3-asr-1.7b",
                 displayName = "Qwen3-ASR 1.7B (GGUF)",
-                sizeLabel = "1.8 GB",
-                url = "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B.Q4_K_M.gguf",
-                filename = "Qwen3-ASR-1.7B.Q4_K_M.gguf",
-                mmprojUrl = "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B.mmproj-Q8_0.gguf",
-                mmprojFilename = "Qwen3-ASR-1.7B.mmproj-Q8_0.gguf",
+                sizeLabel = "2.17 GB",
+                url = "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B-Q8_0.gguf",
+                filename = "Qwen3-ASR-1.7B-Q8_0.gguf",
+                mmprojUrl = "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+                mmprojFilename = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
             ),
             DownloadableModel(
                 id = "gemma-4-E4B",
