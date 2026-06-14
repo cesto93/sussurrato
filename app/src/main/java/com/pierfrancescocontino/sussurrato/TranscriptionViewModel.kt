@@ -93,6 +93,15 @@ class TranscriptionViewModel : ViewModel() {
                 mmprojFilename = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
             ),
             DownloadableModel(
+                id = "qwen3-asr-0.6b",
+                displayName = "Qwen3-ASR 0.6B (GGUF)",
+                sizeLabel = "805 MB",
+                url = "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/Qwen3-ASR-0.6B-Q8_0.gguf",
+                filename = "Qwen3-ASR-0.6B-Q8_0.gguf",
+                mmprojUrl = "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+                mmprojFilename = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+            ),
+            DownloadableModel(
                 id = "gemma-4-E4B",
                 displayName = "Gemma 4 E4B",
                 sizeLabel = "3.7 GB",
