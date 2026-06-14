@@ -88,6 +88,12 @@ internal object AudioUtils {
         return outBytes
     }
 
+    fun byteArrayToFloatArray(pcm: ByteArray): FloatArray {
+        val floats = FloatArray(pcm.size / 4)
+        ByteBuffer.wrap(pcm).order(ByteOrder.nativeOrder()).asFloatBuffer().get(floats)
+        return floats
+    }
+
     fun extractPcmFromWav(wavBytes: ByteArray): WavData {
         val buf = ByteBuffer.wrap(wavBytes).order(ByteOrder.LITTLE_ENDIAN)
         val riff = ByteArray(4)

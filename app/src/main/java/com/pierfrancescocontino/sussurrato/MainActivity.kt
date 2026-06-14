@@ -707,7 +707,7 @@ private fun ModelSelectionDialog(
             context.getExternalFilesDir(null),
         ).flatMap { dir ->
             dir.listFiles()
-                ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
+                ?.filter { it.extension == "litertlm" || it.extension == "gguf" }
                 ?.map { it.name }
                 ?: emptyList()
         }.toSet()
@@ -802,7 +802,7 @@ private fun CustomUrlDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    text = "Enter the URL of a .litertlm model file to download.",
+                    text = "Enter the URL of a model file to download (.litertlm or .gguf).",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

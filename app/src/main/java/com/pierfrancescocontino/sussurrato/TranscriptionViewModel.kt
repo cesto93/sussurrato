@@ -21,7 +21,8 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ExperimentalFlags
-import com.google.ai.edge.litertlm.Message
+import com.pierfrancescocontino.sussurrato.llama.AsrEngine
+import com.pierfrancescocontino.sussurrato.llama.AiChat
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -40,7 +42,11 @@ data class DownloadableModel(
     val sizeLabel: String,
     val url: String,
     val filename: String,
-)
+    val mmprojUrl: String? = null,
+    val mmprojFilename: String? = null,
+) {
+    val isGguf: Boolean get() = filename.endsWith(".gguf")
+}
 
 data class Language(
     val code: String,
@@ -68,13 +74,24 @@ class TranscriptionViewModel : ViewModel() {
     val uiState: StateFlow<TranscriptionUiState> = _uiState.asStateFlow()
 
     private var engine: Engine? = null
+    private var asrEngine: AsrEngine? = null
     private var downloadJob: Job? = null
     private var modelDownloadManager: ModelDownloadManager? = null
     private var currentDownloadId: Long = -1L
+    private var mmprojDownloadId: Long = -1L
     private var prefs: SharedPreferences? = null
 
     companion object {
         val MODELS = listOf(
+            DownloadableModel(
+                id = "qwen3-asr-1.7b",
+                displayName = "Qwen3-ASR 1.7B (GGUF)",
+                sizeLabel = "1.8 GB",
+                url = "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B.Q4_K_M.gguf",
+                filename = "Qwen3-ASR-1.7B.Q4_K_M.gguf",
+                mmprojUrl = "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B.mmproj-Q8_0.gguf",
+                mmprojFilename = "Qwen3-ASR-1.7B.mmproj-Q8_0.gguf",
+            ),
             DownloadableModel(
                 id = "gemma-4-E4B",
                 displayName = "Gemma 4 E4B",
@@ -133,7 +150,7 @@ class TranscriptionViewModel : ViewModel() {
                 }
 
                 val modelInfo = MODELS.firstOrNull { modelFile.name == it.filename }
-                initEngine(modelFile, modelInfo)
+                initEngine(context, modelFile, modelInfo)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isModelLoaded = false,
@@ -160,7 +177,7 @@ class TranscriptionViewModel : ViewModel() {
                     error = null,
                 )
                 try {
-                    initEngine(modelFile, model)
+                    initEngine(context, modelFile, model)
                 } catch (e: Exception) {
                     _uiState.value = _uiState.value.copy(
                         isModelLoaded = false,
@@ -180,38 +197,74 @@ class TranscriptionViewModel : ViewModel() {
     }
 
     @OptIn(ExperimentalApi::class)
-    private fun initEngine(modelFile: File, modelInfo: DownloadableModel?) {
-        engine?.close()
-        ExperimentalFlags.enableSpeculativeDecoding = true
-        val config = EngineConfig(
-            modelPath = modelFile.absolutePath,
-            backend = Backend.CPU(),
-            audioBackend = Backend.CPU(),
-        )
-        engine = Engine(config).also { it.initialize() }
-        _uiState.value = _uiState.value.copy(
-            isModelLoaded = true,
-            isModelLoading = false,
-            isCheckingModel = false,
-            error = null,
-            currentModelName = modelInfo?.displayName ?: modelFile.nameWithoutExtension,
-            currentModelId = modelInfo?.id ?: "custom-${modelFile.name}",
-        )
+    private fun initEngine(context: Context, modelFile: File, modelInfo: DownloadableModel?) {
+        if (modelInfo?.isGguf == true) {
+            val mmprojFile = modelInfo.mmprojFilename?.let { findModelFile(context, it) }
+                ?: throw IllegalArgumentException("mmproj file not found for GGUF model")
+
+            engine?.close()
+            engine = null
+
+            val ae = AiChat.getAsrEngine(context)
+            asrEngine = ae
+            viewModelScope.launch(Dispatchers.IO) {
+                ae.loadModel(modelFile.absolutePath, mmprojFile.absolutePath)
+            }
+            _uiState.value = _uiState.value.copy(
+                isModelLoaded = true,
+                isModelLoading = false,
+                isCheckingModel = false,
+                error = null,
+                currentModelName = modelInfo.displayName,
+                currentModelId = modelInfo.id,
+            )
+        } else {
+            asrEngine?.cleanUp()
+            engine?.close()
+            ExperimentalFlags.enableSpeculativeDecoding = true
+            val config = EngineConfig(
+                modelPath = modelFile.absolutePath,
+                backend = Backend.CPU(),
+                audioBackend = Backend.CPU(),
+            )
+            engine = Engine(config).also { it.initialize() }
+            _uiState.value = _uiState.value.copy(
+                isModelLoaded = true,
+                isModelLoading = false,
+                isCheckingModel = false,
+                error = null,
+                currentModelName = modelInfo?.displayName ?: modelFile.nameWithoutExtension,
+                currentModelId = modelInfo?.id ?: "custom-${modelFile.name}",
+            )
+        }
     }
 
     fun transcribe(context: Context, audioUri: Uri, language: Language? = null) {
-        val engine = engine
-        if (engine == null) {
+        if (_uiState.value.isTranscribing) return
+
+        val litertEngine = engine
+        val ggufEngine = asrEngine
+
+        if (litertEngine == null && ggufEngine == null) {
             _uiState.value = _uiState.value.copy(error = "Model not loaded")
             return
         }
-        if (_uiState.value.isTranscribing) return
 
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.value = _uiState.value.copy(isTranscribing = true, error = null, transcription = null)
 
             try {
-                    val conversation = engine.createConversation(
+                val pcmBytes = decodeAudioToPcm(context, audioUri)
+
+                if (ggufEngine != null) {
+                    val pcmFloats = AudioUtils.byteArrayToFloatArray(pcmBytes)
+                    ggufEngine.transcribe(pcmFloats, 16000).collect { text ->
+                        _uiState.value = _uiState.value.copy(
+                            transcription = (_uiState.value.transcription ?: "") + text,
+                        )
+                    }
+                } else {
+                    val conversation = litertEngine!!.createConversation(
                     ConversationConfig(
                         systemInstruction = Contents.of(
                             buildString {
@@ -230,7 +283,6 @@ class TranscriptionViewModel : ViewModel() {
                 )
 
                 conversation.use { conv ->
-                    val pcmBytes = decodeAudioToPcm(context, audioUri)
                     val wavBytes = AudioUtils.pcmToWav(pcmBytes, 16000)
                     conv.sendMessageAsync(
                         Contents.of(
@@ -248,6 +300,7 @@ class TranscriptionViewModel : ViewModel() {
                         )
                     }
                     _uiState.value = _uiState.value.copy(isTranscribing = false)
+                }
                 }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -277,82 +330,95 @@ class TranscriptionViewModel : ViewModel() {
         downloadJob = viewModelScope.launch(Dispatchers.IO) {
             var lastProgress = 0
 
-            while (true) {
-                val info = downloadManager.queryProgress(downloadId)
-                if (info == null) break
+            fun moveToInternal(filename: String) {
+                val modelFile = File(context.filesDir, filename)
+                val externalFile = context.getExternalFilesDir(null)
+                    ?.let { File(it, filename) }
+                if (externalFile?.exists() == true) {
+                    if (!externalFile.renameTo(modelFile)) {
+                        externalFile.copyTo(modelFile, overwrite = true)
+                        externalFile.delete()
+                    }
+                }
+            }
 
-                when (info.status) {
-                    DownloadManager.STATUS_SUCCESSFUL -> {
-                        val modelFile = File(context.filesDir, model.filename)
-                        val externalFile = context.getExternalFilesDir(null)
-                            ?.let { File(it, model.filename) }
-                        if (externalFile?.exists() == true) {
-                            if (!externalFile.renameTo(modelFile)) {
-                                externalFile.copyTo(modelFile, overwrite = true)
-                                externalFile.delete()
-                            }
+            suspend fun pollDownload(id: Long, onSuccess: suspend () -> Unit) {
+                while (true) {
+                    val info = downloadManager.queryProgress(id)
+                    if (info == null) break
+
+                    when (info.status) {
+                        DownloadManager.STATUS_SUCCESSFUL -> {
+                            onSuccess()
+                            return
                         }
-
-                        try {
-                            initEngine(modelFile, model)
-                        } catch (e: Exception) {
+                        DownloadManager.STATUS_FAILED -> {
+                            val errorMsg = when (info.reason) {
+                                DownloadManager.ERROR_INSUFFICIENT_SPACE -> "Insufficient storage space"
+                                DownloadManager.ERROR_CANNOT_RESUME -> "Download cannot be resumed"
+                                DownloadManager.ERROR_DEVICE_NOT_FOUND -> "Storage device not found"
+                                DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "File already exists"
+                                DownloadManager.ERROR_FILE_ERROR -> "File error"
+                                DownloadManager.ERROR_HTTP_DATA_ERROR -> "HTTP data error"
+                                DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "Too many redirects"
+                                DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "Unhandled HTTP code: ${info.reason}"
+                                else -> "Download failed (reason: ${info.reason})"
+                            }
                             _uiState.value = _uiState.value.copy(
                                 isDownloading = false,
                                 downloadProgress = 0f,
+                                downloadError = errorMsg,
                                 downloadingModelId = null,
-                                isModelLoaded = false,
-                                isModelLoading = false,
-                                error = "Failed to load model: ${e.message}",
                             )
+                            return
                         }
-                        break
-                    }
-
-                    DownloadManager.STATUS_FAILED -> {
-                        val errorMsg = when (info.reason) {
-                            DownloadManager.ERROR_INSUFFICIENT_SPACE ->
-                                "Insufficient storage space"
-                            DownloadManager.ERROR_CANNOT_RESUME ->
-                                "Download cannot be resumed"
-                            DownloadManager.ERROR_DEVICE_NOT_FOUND ->
-                                "Storage device not found"
-                            DownloadManager.ERROR_FILE_ALREADY_EXISTS ->
-                                "File already exists"
-                            DownloadManager.ERROR_FILE_ERROR ->
-                                "File error"
-                            DownloadManager.ERROR_HTTP_DATA_ERROR ->
-                                "HTTP data error"
-                            DownloadManager.ERROR_TOO_MANY_REDIRECTS ->
-                                "Too many redirects"
-                            DownloadManager.ERROR_UNHANDLED_HTTP_CODE ->
-                                "Unhandled HTTP code: ${info.reason}"
-                            else ->
-                                "Download failed (reason: ${info.reason})"
-                        }
-                        _uiState.value = _uiState.value.copy(
-                            isDownloading = false,
-                            downloadProgress = 0f,
-                            downloadError = errorMsg,
-                            downloadingModelId = null,
-                        )
-                        break
-                    }
-
-                    DownloadManager.STATUS_RUNNING,
-                    DownloadManager.STATUS_PAUSED -> {
-                        if (info.totalBytes > 0) {
-                            val progress = ((info.bytesDownloaded * 100) / info.totalBytes).toInt()
-                            if (progress != lastProgress) {
-                                lastProgress = progress
-                                _uiState.value = _uiState.value.copy(
-                                    downloadProgress = progress / 100f,
-                                )
+                        DownloadManager.STATUS_RUNNING,
+                        DownloadManager.STATUS_PAUSED -> {
+                            if (info.totalBytes > 0) {
+                                val progress = ((info.bytesDownloaded * 100) / info.totalBytes).toInt()
+                                if (progress != lastProgress) {
+                                    lastProgress = progress
+                                    _uiState.value = _uiState.value.copy(
+                                        downloadProgress = progress / 100f,
+                                    )
+                                }
                             }
                         }
                     }
+                    delay(500)
+                }
+            }
+
+            pollDownload(downloadId) {
+                moveToInternal(model.filename)
+
+                if (model.isGguf && model.mmprojUrl != null && model.mmprojFilename != null) {
+                    val mmprojModel = model.copy(
+                        id = "${model.id}-mmproj",
+                        url = model.mmprojUrl,
+                        filename = model.mmprojFilename,
+                        mmprojUrl = null,
+                        mmprojFilename = null,
+                    )
+                    val mmprojId = downloadManager.enqueueDownload(mmprojModel)
+                    mmprojDownloadId = mmprojId
+                    pollDownload(mmprojId) {
+                        moveToInternal(model.mmprojFilename)
+                    }
                 }
 
-                delay(500)
+                try {
+                    initEngine(context, File(context.filesDir, model.filename), model)
+                } catch (e: Exception) {
+                    _uiState.value = _uiState.value.copy(
+                        isDownloading = false,
+                        downloadProgress = 0f,
+                        downloadingModelId = null,
+                        isModelLoaded = false,
+                        isModelLoading = false,
+                        error = "Failed to load model: ${e.message}",
+                    )
+                }
             }
         }
     }
@@ -364,6 +430,10 @@ class TranscriptionViewModel : ViewModel() {
             modelDownloadManager?.cancelDownload(currentDownloadId)
             modelDownloadManager = null
             currentDownloadId = -1L
+        }
+        if (mmprojDownloadId != -1L) {
+            modelDownloadManager?.cancelDownload(mmprojDownloadId)
+            mmprojDownloadId = -1L
         }
         _uiState.value = _uiState.value.copy(
             isDownloading = false,
@@ -377,10 +447,11 @@ class TranscriptionViewModel : ViewModel() {
         val sdcard = File("/sdcard")
         if (sdcard.isDirectory) dirs.add(sdcard)
 
+        val extensions = setOf("litertlm", "gguf")
         dirs.forEach { dir ->
             if (dir != null) {
                 dir.listFiles()
-                    ?.filter { it.extension == "litertlm" || it.name.endsWith(".litertlm") }
+                    ?.filter { it.extension in extensions }
                     ?.let { files ->
                         if (filename != null) files.firstOrNull { it.name == filename }
                         else files.maxByOrNull { it.lastModified() }
@@ -487,6 +558,8 @@ class TranscriptionViewModel : ViewModel() {
         }
         engine?.close()
         engine = null
+        asrEngine?.cleanUp()
+        asrEngine = null
     }
 }
 

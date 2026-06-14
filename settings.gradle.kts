@@ -24,4 +24,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "Sussurrato"
 include(":app")
+include(":llama")
  
